@@ -56,8 +56,16 @@
 В репозитории рекомендуется хранить только шаблон `data/profiles/default.json`.
 
 ## Быстрый старт
+0. Делаем файлы исполняемыми и запускаем меню:
+   
+   ```bash
+   chmod +x vpnctl.py && chmod +x vpn
+   ```
+   ```bash
+   sudo ./vpn
+   ```
 
-1. Импорт профиля из ссылки:
+2. Импорт профиля из ссылки:
 
 ```bash
 sudo ./vpnctl.py import-link 'vless://UUID@host:443?...#MyProfile' --activate --name my-vless
