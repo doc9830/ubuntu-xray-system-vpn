@@ -1,0 +1,10 @@
+{
+  "active_profile": "default.json",
+  "language": "ru",
+  "route_mode": "full",
+  "split_interfaces": [],
+  "tun_name": "xray0",
+  "tun_mtu": 1500,
+  "table_id": 24910,
+  "xray_bin": ""
+}
