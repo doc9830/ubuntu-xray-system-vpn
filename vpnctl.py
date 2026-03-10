@@ -49,6 +49,11 @@ DNS_TRACKED_PATHS = [
     Path("/etc/resolv.conf"),
     Path("/etc/systemd/resolved.conf"),
 ]
+DEFAULT_IMPORT_DNS_QUERY_STRATEGY = "UseIPv4"
+DEFAULT_IMPORT_DNS_SERVERS: List[str] = [
+    "1.1.1.1",
+    "8.8.8.8",
+]
 
 CONNECTIVITY_CACHE: Dict[str, Any] = {
     "ts": 0.0,
@@ -86,6 +91,7 @@ I18N = {
         "menu_status": "Показать детальный статус",
         "menu_import_link": "Импорт ссылки",
         "menu_select_profile": "Выбрать профиль из списка",
+        "menu_edit_profile_dns": "Редактировать DNS активного профиля",
         "menu_switch_language": "Сменить язык",
         "menu_exit": "Выход",
         "menu_back": "Назад",
@@ -107,6 +113,17 @@ I18N = {
         "vpn_enabled": "VPN включен",
         "vpn_disabled": "VPN выключен",
         "import_done": "Профиль импортирован",
+        "dns_editor_title": "Редактор DNS профиля",
+        "dns_editor_profile": "Профиль",
+        "dns_editor_current": "Текущие DNS-серверы",
+        "dns_editor_not_set": "DNS не задан",
+        "dns_editor_set": "Указать DNS-серверы (через запятую)",
+        "dns_editor_reset_default": "Сбросить DNS на значения по умолчанию (Cloudflare/Google)",
+        "dns_editor_remove": "Удалить блок DNS из профиля",
+        "dns_editor_input": "Введите DNS-серверы (например 1.1.1.1,8.8.8.8): ",
+        "dns_editor_saved": "DNS в профиле обновлен",
+        "dns_editor_removed": "Блок DNS удален из профиля",
+        "dns_editor_empty": "Список DNS-серверов пуст",
         "profiles_title": "Профили",
         "startup_title": "Инициализация XRAY SYSTEM VPN",
         "startup_wait": "Нажмите Enter для открытия меню...",
@@ -153,6 +170,7 @@ I18N = {
         "menu_status": "Show detailed status",
         "menu_import_link": "Import link",
         "menu_select_profile": "Select profile from list",
+        "menu_edit_profile_dns": "Edit active profile DNS",
         "menu_switch_language": "Switch language",
         "menu_exit": "Exit",
         "menu_back": "Back",
@@ -174,6 +192,17 @@ I18N = {
         "vpn_enabled": "VPN enabled",
         "vpn_disabled": "VPN disabled",
         "import_done": "Profile imported",
+        "dns_editor_title": "Profile DNS editor",
+        "dns_editor_profile": "Profile",
+        "dns_editor_current": "Current DNS servers",
+        "dns_editor_not_set": "DNS is not set",
+        "dns_editor_set": "Set DNS servers (comma-separated)",
+        "dns_editor_reset_default": "Reset DNS to defaults (Cloudflare/Google)",
+        "dns_editor_remove": "Remove DNS block from profile",
+        "dns_editor_input": "Enter DNS servers (example 1.1.1.1,8.8.8.8): ",
+        "dns_editor_saved": "Profile DNS updated",
+        "dns_editor_removed": "DNS block removed from profile",
+        "dns_editor_empty": "DNS server list is empty",
         "profiles_title": "Profiles",
         "startup_title": "XRAY SYSTEM VPN bootstrap checks",
         "startup_wait": "Press Enter to open menu...",
@@ -962,6 +991,58 @@ def backup_local_config_files(timestamp: str, backup_dir: Path, files: List[Path
     return entries
 
 
+def default_import_dns_servers() -> List[str]:
+    # DNS block for imported profiles: explicit public resolvers, no geo filters.
+    return json.loads(json.dumps(DEFAULT_IMPORT_DNS_SERVERS))
+
+
+def normalize_dns_servers(raw_servers: Any) -> List[str]:
+    if not isinstance(raw_servers, list):
+        return []
+
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for item in raw_servers:
+        value = ""
+        if isinstance(item, str):
+            value = item.strip()
+        elif isinstance(item, dict):
+            address = item.get("address")
+            if isinstance(address, str):
+                value = address.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def merge_import_dns_defaults(profile_data: Dict[str, Any]) -> Dict[str, Any]:
+    profile_data["dns"] = {
+        "queryStrategy": DEFAULT_IMPORT_DNS_QUERY_STRATEGY,
+        "servers": default_import_dns_servers(),
+    }
+    return profile_data
+
+
+def build_dns_block_from_user_servers(values: List[str]) -> Dict[str, Any]:
+    servers = normalize_dns_servers(values)
+    if not servers:
+        raise VPNError("DNS server list is empty")
+    return {
+        "queryStrategy": DEFAULT_IMPORT_DNS_QUERY_STRATEGY,
+        "servers": servers,
+    }
+
+
+def format_dns_server_entry(entry: Any) -> str:
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        return json.dumps(entry, ensure_ascii=False)
+    return str(entry)
+
+
 def build_stream_settings_from_params(params: Dict[str, str], default_network: str = "tcp") -> Dict[str, Any]:
     network = (params.get("type") or params.get("net") or default_network or "tcp").lower()
     security = (params.get("security") or params.get("tls") or "none").lower()
@@ -1636,6 +1717,7 @@ def command_import_link(args: argparse.Namespace) -> None:
     ensure_layout()
 
     profile_data, suggested_name = profile_from_share_link(args.link)
+    profile_data = merge_import_dns_defaults(profile_data)
     filename = slugify_profile_name(args.name or suggested_name)
     out_path = PROFILES_DIR / filename
     save_json(out_path, profile_data)
@@ -1659,6 +1741,7 @@ def command_import_file(args: argparse.Namespace) -> None:
     data = load_json(src, default=None)
     if not isinstance(data, dict):
         raise VPNError("Input file is not a valid JSON object")
+    data = merge_import_dns_defaults(data)
 
     filename = slugify_profile_name(args.name or src.stem)
     out_path = PROFILES_DIR / filename
@@ -1793,6 +1876,53 @@ def import_link_submenu(settings: Dict[str, Any]) -> Optional[str]:
     return tr(settings, "import_done")
 
 
+def edit_active_profile_dns_submenu(settings: Dict[str, Any]) -> Optional[str]:
+    while True:
+        profile = profile_path(None, settings)
+        data = load_json(profile, default=None)
+        if not isinstance(data, dict):
+            raise VPNError(f"Invalid JSON profile: {profile}")
+
+        dns = data.get("dns")
+        servers = dns.get("servers") if isinstance(dns, dict) and isinstance(dns.get("servers"), list) else []
+
+        clear_terminal()
+        print(paint(f"┌─ {tr(settings, 'dns_editor_title')}", "36"))
+        print(f"{tr(settings, 'dns_editor_profile')}: {profile.name}")
+        print(f"{tr(settings, 'dns_editor_current')}:")
+        if servers:
+            for idx, server in enumerate(servers, 1):
+                print(f"  {idx}. {format_dns_server_entry(server)}")
+        else:
+            print(f"  - {tr(settings, 'dns_editor_not_set')}")
+        print()
+        print(f"1. {tr(settings, 'dns_editor_set')}")
+        print(f"2. {tr(settings, 'dns_editor_reset_default')}")
+        print(f"3. {tr(settings, 'dns_editor_remove')}")
+        print(f"0. {tr(settings, 'menu_back')}")
+        choice = input(f"{tr(settings, 'select_prompt')}: ").strip()
+        if choice == "0":
+            return None
+        if choice == "1":
+            raw = input(tr(settings, "dns_editor_input")).strip()
+            if raw == "0":
+                continue
+            values = [x.strip() for x in raw.split(",") if x.strip()]
+            if not values:
+                raise VPNError(tr(settings, "dns_editor_empty"))
+            data["dns"] = build_dns_block_from_user_servers(values)
+            save_json(profile, data)
+            return f"{tr(settings, 'dns_editor_saved')}: {profile.name}"
+        if choice == "2":
+            data = merge_import_dns_defaults(data)
+            save_json(profile, data)
+            return f"{tr(settings, 'dns_editor_saved')}: {profile.name}"
+        if choice == "3":
+            data.pop("dns", None)
+            save_json(profile, data)
+            return f"{tr(settings, 'dns_editor_removed')}: {profile.name}"
+
+
 def read_menu_choice_with_refresh(
     settings: Dict[str, Any],
     notice: str,
@@ -1821,7 +1951,8 @@ def command_menu(_args: argparse.Namespace) -> None:
             ("3", tr(settings, "menu_status")),
             ("4", tr(settings, "menu_import_link")),
             ("5", tr(settings, "menu_select_profile")),
-            ("6", tr(settings, "menu_switch_language")),
+            ("6", tr(settings, "menu_edit_profile_dns")),
+            ("7", tr(settings, "menu_switch_language")),
             ("0", tr(settings, "menu_exit")),
         ]
         choice = read_menu_choice_with_refresh(settings, notice, options)
@@ -1860,6 +1991,11 @@ def command_menu(_args: argparse.Namespace) -> None:
                     notice = paint(f"{tr(settings, 'profile_select_saved')}: {selected}", "32")
                 continue
             if choice == "6":
+                dns_notice = edit_active_profile_dns_submenu(settings)
+                if dns_notice:
+                    notice = paint(dns_notice, "32")
+                continue
+            if choice == "7":
                 lang = choose_language_from_menu(settings)
                 if lang:
                     settings = load_settings()
